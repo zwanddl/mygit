@@ -1,0 +1,689 @@
+/*****************************************************************************
+
+******************************************************************************/
+
+
+#include "STC12C5A60S2.h"
+#include <intrins.h>
+#include <stdio.h>
+#include <string.h>
+#define uchar unsigned char 
+#define uint unsigned int  		  
+#define RdCommand 0x01 //?¨ò?ISPμ?2ù×÷?üá? 
+#define PrgCommand 0x02 						
+#define EraseCommand 0x03  
+#define ENABLE_IAP 0x83 //?¨ò?CPUμ?μè′yê±??
+
+                                                                 
+//******************************************************************************
+//输入部分定义
+//******************************************************************************
+sbit KEY_OPEN=P3^6;
+sbit KEY_CLOSE=P3^7;
+sbit KEY_CLOSE2=P1^6;
+sbit KEY_MODE=P1^5;
+
+sbit GYQ_CLOSE=P1^0;
+sbit GYQ_OPEN=P1^1;
+//sbit GYQ_FIXUP=P1^2;
+//sbit GYQ_FIXDOWN=P1^3;
+//sbit GYQ_BUTDOWN=P1^4;
+
+
+//******************************************************************************
+//输出部分定义
+//******************************************************************************	    	 
+sbit XG_KAI=P0^1;                  //开箱电磁阀一端
+sbit XG_GUAN=P0^0;                 //关箱电磁阀一端
+//sbit FIXUP_DOWN=P0^2;
+sbit BUTUP_DOWN=P0^3;
+sbit LED_MOD=P0^4;
+
+sbit LED_GREEN=P0^6;
+sbit LED_RED=P0^7;
+
+uint flag_key=0;
+uchar flag_ck=0;
+uchar flag_int=0;
+uchar flag_lock=0;								 //锁按键标志位
+uchar flag_click;
+uchar flag_auto=0;
+uchar flag_open_fail=0;
+uchar flag_close_fail=0;
+uchar flag_value;
+uchar flag_button = 0;
+uchar str[]={'0','0','0','0','0','0','0','0','0','0','0','0'};
+
+
+
+//******************************************************************************
+//延时函数   延时时间ms
+//******************************************************************************
+void delay_ms(uint xms)     
+{ 
+	uint i,j; 
+	for(i=xms;i>0;i--)        //i=xms?′?óê±??xmsoá?? 
+		for(j=880;j>0;j--); 
+}
+//*****************************************************************************************
+//3?ê??ˉoˉêy   ????′??÷  ???ú  ±ê??μè??DD3?ê??ˉ
+//′??ú1·￠?í1??×?·?
+void SendByte(uchar dat)
+{
+ SBUF = dat;
+ while(!TI);
+ TI = 0;
+}
+
+//′??ú1·￠?í1??×?·?′?
+void SendStr(uchar *s)
+{
+	ES=0;
+	
+	while(*s!='\0')// \0 ±íê?×?·?′??áê?±ê??￡?í¨1y?ì2aê?·?×?·?′????2
+  {
+		SendByte(*s);
+		s++;
+  }
+	ES=1;
+
+}
+
+//******************************************************************************************
+//设置到安全模式
+void IapIdle()
+{
+	IAP_CONTR=0;								 //禁止IAP操作
+	IAP_CMD=0;									 //去除IAP命令
+	IAP_TRIG=0;									 //防止IAP命令误触发
+	IAP_ADDRH=0x80; 						 //送地址指向非EEPROM区
+	IAP_ADDRL=0;
+}
+
+//从EEPROM中读字节 
+uchar ReadByte(uint addr)
+{
+	EA=0;
+	IAP_CONTR=ENABLE_IAP;				 //开IAP功能，并设置等待时间
+	IAP_CMD=RdCommand;					 //设置读操作
+	IAP_ADDRL=addr;							 //设置读地址
+	IAP_ADDRH=addr>>8;
+	IAP_TRIG=0x5a;							 //触发执行
+	IAP_TRIG=0xa5;
+	_nop_();
+	IapIdle();
+	EA=1;									 //关IAP功能
+	return (IAP_DATA);					 //返回读到的数据
+}
+
+//向EEPROM写字节
+void ProgramByte(uint addr,uchar dat)
+{
+	EA=0;
+	IAP_CONTR=ENABLE_IAP;				 //开IAP功能，并设置等待时间
+	IAP_CMD=PrgCommand;					 //设置编程操作
+	IAP_ADDRL=addr;							 //设置编程地址
+	IAP_ADDRH=addr>>8;
+	IAP_DATA=dat;								 //写数据到EEPROM
+	IAP_TRIG=0x5a;							 //触发执行
+	IAP_TRIG=0xa5;
+	_nop_();
+	IapIdle();									 //关IAP功能
+	EA=1;
+}
+
+//擦除扇区
+void EraseSector(uint addr)
+{
+	EA=0;
+	IAP_CONTR=ENABLE_IAP;				 //开IAP功能，并设置等待时间
+	IAP_CMD=EraseCommand;				 //设置擦除操作
+	IAP_ADDRL=addr;							 //设置擦除地址，扇区中任意一个字节的地址都是
+															 //该扇区的地址，无需求出首地址
+	IAP_ADDRH=addr>>8;
+	IAP_TRIG=0x5a;							 //触发执行
+	IAP_TRIG=0xa5;
+	_nop_();
+	IapIdle();									 //关IAP功能
+	EA=1;
+}
+
+void button()
+{
+	uchar i = 0;
+	for(i = 0;i < 2;i ++)
+	{
+		BUTUP_DOWN = 0;
+		delay_ms(200);
+		BUTUP_DOWN = 1;
+		delay_ms(200);
+	}
+	SendStr("BUTTON OK\r\n");
+}
+
+//******************************************************************************
+//开箱函数
+//******************************************************************************
+void boxopen_ck()
+{
+	uchar i;
+	flag_open_fail=0;
+	flag_button = 0;   
+    XG_GUAN=1;
+    delay_ms(10);
+    XG_KAI=0;
+	  for(i=0;i<25;i++)
+	  {
+			delay_ms(200); 
+			if(GYQ_OPEN==0)		
+			break;
+	  }
+	  if(i>24)
+	  {  
+	    XG_GUAN=1;
+	    delay_ms(10);
+	    XG_KAI=0;
+	    flag_open_fail=1;
+		SendStr("DOOR NG\r\n"); 	
+	  }
+
+//  if(flag_open_fail==0)
+//	{
+//		if((GYQ_FIXUP==0) || (GYQ_FIXDOWN==0))
+//		{
+//			FIXUP_DOWN = 1;
+//			for(i = 0;i < 25;i ++)
+//			{
+//			   	delay_ms(200);
+//				if(GYQ_FIXUP==0)
+//				{
+//				  	break;
+//				}
+//			}
+//			if(i==25)
+//			{			
+//				flag_open_fail=1;
+//				SendStr("FIXUP NG\r\n");
+//			}
+//		}else{
+//			SendStr("NO FIXTURE!\r\n");
+//		}
+//	}
+
+  	if(flag_open_fail==0)
+	{
+		SendStr("OK\r\n");
+	}else{
+		SendStr("OPEN NG\r\n");
+	}
+}
+
+
+//******************************************************************************
+//关箱函数
+//******************************************************************************
+void boxclose_key()			 //按钮手动关箱
+{
+//	uchar i;
+	flag_close_fail=0;
+	flag_int=0;
+	LED_GREEN=1;
+	LED_RED=1;
+	IE0=0;
+  	EX0=1;
+	
+//	if((GYQ_CLOSE!=0) && (KEY_CLOSE==0) && (KEY_CLOSE2==0))
+//	{
+//		if((GYQ_FIXUP==0) || (GYQ_FIXDOWN==0))
+//		{
+//			FIXUP_DOWN = 0;
+//			for(i = 0;i < 25;i ++)
+//			{
+//				if(GYQ_FIXDOWN==0)
+//				{
+//					break;
+//				}
+//				delay_ms(200);
+//			}
+//			if(i == 25)
+//			{	
+//				flag_close_fail=1;
+//				SendStr("FIXDOWN NG\r\n");
+//			}
+//		}else{
+//			SendStr("NO FIXTURE!\r\n");
+//		}
+
+		if((flag_close_fail==0)	&& (KEY_CLOSE==0) && (KEY_CLOSE2==0) && (flag_button == 0))
+		{		
+			button();
+			flag_button = 1;
+			while(!KEY_CLOSE);
+			while(!KEY_CLOSE2);
+			//SendStr("READY\r\n");
+		}
+
+		if((flag_close_fail == 0) && (flag_button == 1))
+		{	
+			while((KEY_CLOSE==0) && (KEY_CLOSE2==0) && (flag_int==0))
+			{
+				XG_KAI=1;
+				delay_ms(10);
+				XG_GUAN=0;
+				if(GYQ_CLOSE==0)		//检测关箱到位
+				{
+					EX0=0;
+					//flag_button = 0;
+					break;
+				}
+			}
+			if((GYQ_CLOSE!=0)||(flag_int!=0))
+			{
+				EX0=0;
+				XG_GUAN=1;
+			  	delay_ms(10);
+			  	XG_KAI=0;
+				//FIXUP_DOWN = 1;
+				flag_close_fail=1;
+				SendStr("DOORCLOSE NG\r\n");
+			}
+		
+			while(!KEY_CLOSE);
+			while(!KEY_CLOSE2);
+		}
+
+
+	
+}
+
+
+void boxclose_ck()		 //按钮自动关箱
+{
+//	uchar i;
+	flag_close_fail=0;
+	flag_int=0;
+	LED_GREEN=1;
+	LED_RED=1;
+	IE0=0;
+  EX0=1;
+
+//	if((GYQ_FIXUP==0) || (GYQ_FIXDOWN==0))
+//	{
+//		FIXUP_DOWN = 0;
+//		for(i = 0;i < 25;i ++)
+//		{
+//			if(GYQ_FIXDOWN==0)
+//			{
+//				break;
+//			}
+//			delay_ms(200);
+//		}
+//		if(i == 25)
+//		{	
+//			flag_close_fail=1;
+//			SendStr("FIXDOWN NG\r\n");
+//		}
+//	}else{
+//		SendStr("NO FIXTURE!\r\n");
+//	}
+
+	if(flag_close_fail == 0)
+	{	
+		while((KEY_CLOSE==0) && (KEY_CLOSE2==0) && (flag_int==0))
+		{
+			XG_KAI=1;
+			delay_ms(10);
+			XG_GUAN=0;
+			if(GYQ_CLOSE==0)		
+			{
+				EX0=0;
+				delay_ms(5000);
+				break;
+			}
+		}
+		if((GYQ_CLOSE!=0)||(flag_int!=0))
+		{
+			EX0=0;
+			XG_GUAN=1;
+		  	delay_ms(10);
+		  	XG_KAI=0;
+			//FIXUP_DOWN = 1;
+			flag_close_fail=1;
+			SendStr("DOORCLOSE NG\r\n");
+		}
+	}
+
+	if(flag_close_fail==0)
+	{		
+		button();
+	}
+
+	if(flag_close_fail==0)
+	{		
+		SendStr("READY\r\n");
+		while(!KEY_CLOSE);
+		while(!KEY_CLOSE2);
+	}
+//	else{
+//		SendStr("CLOSE NG\r\n");
+//	}		
+
+}
+
+//******************************************************************************
+void boxclose_cm()			//指令自动关箱
+{
+	uchar i;
+	flag_close_fail=0;
+	flag_int=0;
+	LED_GREEN=1;
+	LED_RED=1;
+	IE0=0;
+  EX0=1;
+
+//	FIXUP_DOWN = 0;
+//	for(i = 0;i < 25;i ++)
+//	{
+//		if(GYQ_FIXDOWN==0)
+//		{
+//			break;
+//		}
+//		delay_ms(200);
+//	}
+//	if(i == 25)
+//	{	
+//		flag_close_fail=1;
+//		SendStr("FIXDOWN NG\r\n");
+//	}
+
+	if(flag_close_fail == 0)
+	{	
+		XG_KAI=1;
+		delay_ms(10);
+		XG_GUAN=0;
+		for(i=0;((i<30)&&(flag_int==0));i++)
+		{
+			delay_ms(200); 
+			if(GYQ_CLOSE==0)		//检测关箱到位
+			{
+				EX0=0;
+				delay_ms(5000);
+				break;
+			}
+		}
+		if((i>29)||(flag_int==1))
+		{
+			EX0=0;
+			XG_GUAN=1;
+		  delay_ms(10);
+		  XG_KAI=0;
+			flag_close_fail=1;
+			SendStr("DOORCLOSE NG\r\n");
+		}
+	}
+
+	if(flag_close_fail==0)
+	{		
+		button();
+	}
+
+	if(flag_close_fail==0)
+	{		
+		SendStr("READY\r\n");
+	}else{
+		SendStr("CLOSE NG\r\n");
+	}	
+}
+
+
+void interrupt0() interrupt 0
+{
+      XG_GUAN=1;
+      delay_ms(10);
+      XG_KAI=0;
+      delay_ms(2000);
+      flag_int=1;     
+      EX0=0;         //外部中断0关
+}
+//******************************************************************************
+//按键扫描函数
+//*****************************************************************************************
+void keyscan()
+{
+	if(KEY_MODE==0)
+	{
+		delay_ms(20);
+		if(KEY_MODE == 0)
+		{
+			SendStr("MODE SET OK\r\n");
+			if(flag_auto==0)
+			{
+			  	flag_auto=1;
+			}else{
+				flag_auto=0;
+			}
+		}
+		while(!KEY_MODE);
+	}
+	if(flag_auto==0)
+	{
+		LED_MOD=0;
+	}else{
+		LED_MOD=1;
+	}
+	
+	if((KEY_CLOSE==0)||(KEY_CLOSE2==0))
+	{
+		flag_key ++;
+		if(flag_key==30000)
+		{
+			flag_key=3000;
+		}
+		delay_ms(1);
+	}else{
+		flag_key = 0;
+	}
+	
+	if(KEY_OPEN==0)
+	{
+		delay_ms(20);
+		if(KEY_OPEN==0)
+		{
+			if(flag_auto==0)
+				boxopen_ck();
+			else
+				boxopen_ck();
+			//while(!KEY_OPEN);
+		}
+	}
+	
+
+
+	if((KEY_CLOSE==0)&&(KEY_CLOSE2==0)&&(flag_key<3000))
+	{
+		delay_ms(20);
+		if((KEY_CLOSE==0)&&(KEY_CLOSE2==0)&&(flag_key<3000))
+		{
+			if(flag_auto==0)
+				boxclose_ck();
+			else
+				boxclose_key(); 
+			//while(KEY_CLOSE==0);
+		}
+	} 			 
+}
+
+//******************************************************************************
+//串口中断函数  接收open\close来自PC机的命令
+//******************************************************************************
+void interrupt4() interrupt 4
+{
+	uchar i=0,j;
+	for(j=0;j<=sizeof(str);j++)		//当串口没有接收到数据一段时间后，退出此循环
+	{
+		if(RI==1)
+		{
+			RI=0;	          	    
+			str[i++]=SBUF;
+		}
+		delay_ms(1);										
+	}
+
+	str[i]='\0';   //使每充填一个后就在后面加入字符串结束标志，直到串口中断没有收到字符	  
+		if((!strcmp("OPEN",str))||(!strcmp("open",str)))
+			flag_ck=1;
+		if((!strcmp("CLOSE",str))||(!strcmp("close",str)))
+			flag_ck=2;
+		if((!strcmp("STATUS",str))||(!strcmp("status",str)))
+			flag_ck=3;
+		if((!strcmp("LOCK",str))||(!strcmp("lock",str)))
+			flag_ck=4;
+		if((!strcmp("UNLOCK",str))||(!strcmp("unlock",str)))
+			flag_ck=5;
+		if((!strcmp("CLICKON",str))||(!strcmp("clickon",str)))
+			flag_ck=6;
+		if((!strcmp("CLICKOFF",str))||(!strcmp("clickoff",str)))
+			flag_ck=7;
+		if((!strcmp("PASS",str))||(!strcmp("pass",str)))
+			flag_ck=8;
+		if((!strcmp("FAIL",str))||(!strcmp("fail",str)))
+			flag_ck=9;
+		if((!strcmp("VERSIONS",str))||(!strcmp("versions",str)))
+			flag_ck=10;	
+		if((!strcmp("FIXUP",str))||(!strcmp("fixup",str)))
+			flag_ck=11;	
+		if((!strcmp("FIXDOWN",str))||(!strcmp("fixdown",str)))
+			flag_ck=12;			
+		if((!strcmp("BUTTON",str))||(!strcmp("button",str)))
+			flag_ck=13;			
+		if((!strcmp("DOOROPEN",str))||(!strcmp("dooropen",str)))
+			flag_ck=14;			
+		if((!strcmp("DOORCLOSE",str))||(!strcmp("doorclose",str)))
+			flag_ck=15;						    
+		memset(str,0,sizeof(str));			 //清空缓存数组
+}
+//******************************************************************************
+//初始化函数   对寄存器  端口  标志等进行初始化
+//******************************************************************************
+void INIT()
+{ 
+
+}
+//******************************************************************************
+//主函数
+//******************************************************************************
+void main()
+{
+	INIT();
+	flag_value=ReadByte(0x0800);//程序开始时读取EEPROM中数据
+	if((flag_value!=0)&&(flag_value!=1))
+		flag_click=0;
+	else
+		flag_click=flag_value;
+	while(1)
+	{
+    	if(flag_lock==0)
+			keyscan();
+		if(flag_ck==1)
+		{
+			flag_ck=0;
+			boxopen_ck();
+		}
+	    if(flag_ck==2)
+	    {
+	      flag_ck=0;
+	      boxclose_cm();
+	    }
+		if(flag_ck==3)
+	    {
+	      flag_ck=0;
+				if((GYQ_CLOSE==1)&&(XG_GUAN==1))
+				SendStr("OPEN\r\n");
+	     	else if((GYQ_CLOSE==0)&&(XG_GUAN==0))
+					SendStr("CLOSE\r\n");
+		   
+	    }
+		if(flag_ck==4)
+	    {
+	      flag_ck=0;
+	      flag_lock=1;
+			SendStr("OK\r\n");
+	    }
+		if(flag_ck==5)
+	    {
+	      flag_ck=0;
+	      flag_lock=0;
+			SendStr("OK\r\n");
+	    }
+		if(flag_ck==6)
+	    {
+	      flag_ck=0;
+	      flag_click=1;
+		  EraseSector(0x0800);//2á3yéè??        
+			ProgramByte(0x0800,flag_click);//??D?D′è?êy?Y
+			SendStr("OK\r\n");
+	    }
+		if(flag_ck==7)
+	    {
+	      flag_ck=0;
+	      flag_click=0;
+			 EraseSector(0x0800);//2á3yéè??       
+			ProgramByte(0x0800,flag_click);//??D?D′è?êy?Y
+				SendStr("OK\r\n");
+	    }
+		if(flag_ck==8)			 //绿灯亮
+		{
+			flag_ck=0;
+			LED_GREEN=0;
+			LED_RED=1;
+			SendStr("OK\r\n");
+		}
+		if(flag_ck==9)			 //红灯亮
+		{
+			flag_ck=0;
+			LED_GREEN=1;
+			LED_RED=0;
+			SendStr("OK\r\n");
+		}
+		if(flag_ck==10)			 //版本
+		{
+			flag_ck=0;
+			SendStr("PB3004-JCZZ1901070011\r\n");
+		}
+		if(flag_ck==11)			 //FIXUP
+		{
+			flag_ck=0;
+			//FIXUP_DOWN = 1;
+			SendStr("OK\r\n");
+		}
+		if(flag_ck==12)			 //FIXDOWN
+		{
+			flag_ck=0;
+			//FIXUP_DOWN = 0;
+			SendStr("OK\r\n");
+		}
+		if(flag_ck==13)			 //BUTTON
+		{
+			flag_ck=0;
+			button();
+			SendStr("OK\r\n");
+		}
+		if(flag_ck==14)			 //DOOROPEN
+		{
+			flag_ck=0;
+			XG_GUAN = 1;
+			delay_ms(20);
+			XG_KAI = 0;
+			SendStr("OK\r\n");
+		}
+		if(flag_ck==15)			 //DOORCLOSE
+		{
+			flag_ck=0;
+			XG_KAI = 1;
+			delay_ms(0);
+			XG_GUAN = 0;
+			SendStr("OK\r\n");
+		}
+
+	}
+}
